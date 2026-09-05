@@ -1,0 +1,13 @@
+# Python 相關暫存
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+
+# TAGES 專案的資料與輸出
+data_output/
+data_input/seismic/
+data_input/drilling/
+*.npy
+*.csv
