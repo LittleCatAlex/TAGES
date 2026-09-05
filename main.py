@@ -9,8 +9,8 @@ import numpy as np
 import os
 import shutil  # 【新增】用來安全刪除子資料夾與檔案
 from pathlib import Path
+import json
 
-# 引入外部模組
 from velocity_processor import process_velocity
 from drill_processor import process_drill_records
 from data_fetcher import fetch_tvm_data
@@ -133,27 +133,24 @@ def export_rqd_to_csv(
 # =====================================================================
 @app.command(name="drilling")
 def process_drilling(
-    drill_dir: str = typer.Option("data_input/drilling", help="鑽探原始資料夾"),
+    json_path: str = typer.Option("data_input/drilling/borehole_final_results.json", help="柱狀圖 JSON 檔案路徑"),
     output_dir: str = typer.Option("data_output", help="輸出資料夾"),
     step: float = typer.Option(0.5, help="目標深度網格解析度(公尺)"),
     attach_seismic: bool = typer.Option(True, help="是否自動抓取已處理的 TVM 震波資料進行合併")
 ):
     """
-    ⛏️ 批次執行 Excel 鑽探紀錄清洗、讀取分頁、文字解碼，並輸出 AI 訓練矩陣
+    ⛏️ 讀取 JSON 柱狀圖紀錄、執行 NLP 文字解碼、掛載震波並輸出 AI 訓練矩陣
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    typer.secho(f"\n🔍 開始掃描鑽探資料夾 [{drill_dir}]...", fg=typer.colors.CYAN)
-    
-    try:
-        drill_files = [f for f in os.listdir(drill_dir) if f.endswith(('.xls', '.xlsx')) and not f.startswith('~')]
-    except FileNotFoundError:
-        typer.secho("❌ 找不到鑽探資料夾，請確認路徑！", fg=typer.colors.RED)
-        return
-    
-    if not drill_files:
-        typer.secho("❌ 找不到任何 Excel 鑽探檔案！", fg=typer.colors.RED)
+    if not os.path.exists(json_path):
+        typer.secho(f"❌ 找不到 JSON 鑽探檔案 [{json_path}]！", fg=typer.colors.RED)
         return
 
+    typer.secho(f"\n📂 正在載入與解析 JSON 鑽探資料 [{json_path}]...", fg=typer.colors.CYAN)
+    with open(json_path, 'r', encoding='utf-8') as f:
+        raw_data = json.load(f)
+
+    # 檢查是否需要合併震波資料
     tvm_processed_path = os.path.join(output_dir, "TVM_Processed.csv")
     tvm_df = pd.DataFrame()
     if attach_seismic:
@@ -164,31 +161,24 @@ def process_drilling(
             typer.secho("⚠️ 找不到已處理的 TVM 檔案，將略過震波合併 (建議先執行 seismic 指令)", fg=typer.colors.YELLOW)
 
     success_count = 0
-    
-    for file_name in drill_files:
-        well_name = file_name.split('.xls')[0] 
-        typer.secho(f"\n⏳ 正在處理鑽孔：{well_name}", fg=typer.colors.YELLOW)
+    for file_key, info in raw_data.items():
+        well_name = info['borehole_info']['borehole_id']
+        strata_list = info['strata']
         
+        typer.secho(f"\n⏳ 正在處理鑽孔：{well_name} ({file_key})", fg=typer.colors.YELLOW)
         try:
-            file_path = os.path.join(drill_dir, file_name)
-            
-            rqd_df = pd.read_excel(file_path, sheet_name='岩石RQD值')
-            litho_df = pd.read_excel(file_path, sheet_name='岩石或土壤性質描述')
-            
-            # 安全計算鑽井最大深度
-            max_depth = 0.0
-            if '下限深度' in rqd_df.columns and not rqd_df['下限深度'].dropna().empty:
-                max_depth = max(max_depth, float(rqd_df['下限深度'].max()))
-            if '下限深度' in litho_df.columns and not litho_df['下限深度'].dropna().empty:
-                max_depth = max(max_depth, float(litho_df['下限深度'].max()))
+            # 決定最大深度 (取 strata 裡最後一層的深度，若無則預設 10m)
+            max_depth = float(strata_list[-1]['depth_m']) if strata_list else 10.0
             if pd.isna(max_depth) or max_depth <= 0.0:
                 max_depth = 10.0
                 
             target_depths = np.arange(0.0, max_depth + step, step)
             merged_df = pd.DataFrame({'Depth': target_depths, 'Well_Name': well_name})
 
-            merged_df = process_drill_records(merged_df, rqd_df, litho_df)
+            # 呼叫更新後的鑽探處理模組 (傳入 strata 清單)
+            merged_df = process_drill_records(merged_df, strata_list)
 
+            # 合併震波資料 (如果有的話)
             if not tvm_df.empty:
                 merged_df['Depth'] = merged_df['Depth'].round(2)
                 tvm_df['Depth'] = tvm_df['Depth'].round(2)
@@ -200,20 +190,20 @@ def process_drilling(
             else:
                 feature_cols = ['Depth', 'RQD', 'Lithology_ID', 'Structure_ID']
 
-            csv_out = os.path.join(output_dir, f"{well_name}_Processed.csv")
-            npy_out = os.path.join(output_dir, f"{well_name}_Features.npy")
+            safe_name = file_key.replace('.png', '').replace(' ', '_')
+            csv_out = os.path.join(output_dir, f"{safe_name}_Processed.csv")
+            npy_out = os.path.join(output_dir, f"{safe_name}_Features.npy")
             
             merged_df.to_csv(csv_out, index=False, encoding='utf-8-sig')
             np.save(npy_out, merged_df[feature_cols].to_numpy())
             
-            typer.secho(f"  └─ ✅ {well_name} 處理完成", fg=typer.colors.GREEN)
+            typer.secho(f"  └─ ✅ {file_key} 處理完成", fg=typer.colors.GREEN)
             success_count += 1
             
         except Exception as e:
-            typer.secho(f"  └─ ❌ {well_name} 處理失敗: {e}", fg=typer.colors.RED)
+            typer.secho(f"  └─ ❌ {file_key} 處理失敗: {e}", fg=typer.colors.RED)
 
-    typer.secho(f"\n🎉 批次處理結束！共成功處理 {success_count} 口鑽井。", fg=typer.colors.MAGENTA, bold=True)
-
+    typer.secho(f"\n🎉 批次處理結束！共成功處理 {success_count} 筆鑽探資料。", fg=typer.colors.MAGENTA, bold=True)
 
 # =====================================================================
 # 【全新功能】指令 4：一鍵清除輸出資料夾 (帶防呆)

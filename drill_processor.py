@@ -34,21 +34,37 @@ def advanced_geology_encoder(description):
         
     return litho_id, struct_id
 
-def process_drill_records(merged_df: pd.DataFrame, rqd_df: pd.DataFrame, litho_df: pd.DataFrame) -> pd.DataFrame:
+def parse_json_strata_to_dataframe(strata_list):
+    """將 JSON 的 strata 清單轉換為標準的區間 DataFrame (含上限深度與下限深度)"""
+    records = []
+    top_depth = 0.0
+    for layer in strata_list:
+        bottom_depth = float(layer['depth_m'])
+        desc = layer['description']
+        records.append({
+            '上限深度': top_depth,
+            '下限深度': bottom_depth,
+            '岩石或土壤性質描述': desc
+        })
+        top_depth = bottom_depth
+    return pd.DataFrame(records)
+
+def process_drill_records(merged_df: pd.DataFrame, strata_list: list) -> pd.DataFrame:
     """
-    接收統一網格與鑽探資料，執行映射與文字編碼
+    接收統一網格與 JSON 格式的 strata 清單，執行區間映射與文字編碼
     """
-    # 1. 映射 RQD
-    merged_df['RQD'] = merged_df['Depth'].apply(
-        lambda d: map_interval_data(d, rqd_df, '上限深度', '下限深度', '岩石RQD值')
-    ).fillna(0)
+    # 1. 將 JSON strata 轉為區間 DataFrame
+    litho_df = parse_json_strata_to_dataframe(strata_list)
 
     # 2. 映射岩性描述
     merged_df['Lithology_Desc'] = merged_df['Depth'].apply(
         lambda d: map_interval_data(d, litho_df, '上限深度', '下限深度', '岩石或土壤性質描述')
     ).fillna('Unknown')
 
-    # 3. 執行 NLP 特徵解碼
+    # 3. 因為 JSON 來源無獨立 RQD，預設填 0.0
+    merged_df['RQD'] = 0.0
+
+    # 4. 執行 NLP 特徵解碼
     merged_df['Lithology_ID'], merged_df['Structure_ID'] = zip(
         *merged_df['Lithology_Desc'].apply(advanced_geology_encoder)
     )
