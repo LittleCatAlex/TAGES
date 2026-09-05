@@ -2,6 +2,8 @@ import numpy as np
 from scipy.interpolate import interp1d
 import pandas as pd
 
+from data_fetcher import fetch_tvm_data
+
 def process_velocity(tvm_df: pd.DataFrame, target_depths: np.ndarray) -> pd.DataFrame:
     """
     接收震波速率 DataFrame，同時內插 Vp 與 Vs 到目標深度網格上，回傳 DataFrame
