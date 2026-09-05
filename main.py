@@ -331,32 +331,56 @@ def interactive_predict():
     """
     啟動地質預測終端
     """
+    import os
+    import joblib
+    import numpy as np
+    
     model_path = os.path.join("models", "tages_rf_model.pkl")
     if not os.path.exists(model_path):
         typer.secho("❌ 找不到訓練好的模型！請先執行 train 指令。", fg=typer.colors.RED)
         return
 
     model = joblib.load(model_path)
-    mapping = {0: "未知/其他", 1: "泥岩/黏土/粉土", 2: "砂岩", 3: "礫石/卵石/巖塊", 4: "互層"}
+    
+    # 🌟 更新為全新的 8 種地質分類字典
+    mapping = {
+        0: "未知/其他 (Unknown)", 
+        1: "表土/填土 (Topsoil)", 
+        2: "泥岩/黏土 (Mud/Clay)", 
+        3: "粉土 (Silt)", 
+        4: "砂岩 (Sandstone)", 
+        5: "礫石 (Gravel)", 
+        6: "互層 (Interbedded)", 
+        7: "堅硬岩盤 (Hard Bedrock)"
+    }
     
     typer.secho("\n✅ 模型載入完成！進入互動預測模式 (輸入 q 離開)", fg=typer.colors.GREEN, bold=True)
+    typer.secho("💡 提示：AI 現在完全依靠波速 (Vp/Vs) 來判斷岩相，不再受深度限制！", fg=typer.colors.YELLOW)
     
     while True:
         try:
             print("-" * 45)
-            depth_input = input("📍 請輸入深度 (公尺): ").strip()
+            # 為了使用者體驗保留深度輸入，但 AI 預測時不會用到它
+            depth_input = input("📍 請輸入深度 (公尺，僅供紀錄): ").strip()
             if depth_input.lower() in ['q', 'quit', 'exit']: break
             
             depth = float(depth_input)
             vp = float(input("🌊 請輸入 P波速率 (Vp, m/s): ").strip())
             vs = float(input("🌊 請輸入 S波速率 (Vs, m/s): ").strip())
 
-            prediction_id = model.predict(np.array([[depth, vp, vs]]))[0]
+            # 🌟 關鍵修正：AI 模型現在只有 2 個特徵 (Vp, Vs)，所以不要把 depth 丟進去！
+            features = np.array([[vp, vs]])
+            prediction_id = model.predict(features)[0]
             rock_name = mapping.get(int(prediction_id), "未定義")
 
             typer.secho(f"\n✨ 預測結果 👉 【 {rock_name} 】 (類別ID: {int(prediction_id)})", fg=typer.colors.MAGENTA, bold=True)
-        except ValueError:
-            typer.secho("⚠️ 格式錯誤！請輸入正確的數字。", fg=typer.colors.RED)
+            
+        except ValueError as e:
+            # 區分是使用者打錯字，還是模型報錯
+            if "could not convert" in str(e).lower() or not str(e):
+                typer.secho("⚠️ 格式錯誤！請確認輸入的是純數字。", fg=typer.colors.RED)
+            else:
+                typer.secho(f"⚠️ 模型運算發生錯誤: {e}", fg=typer.colors.RED)
         except KeyboardInterrupt:
             break
             
