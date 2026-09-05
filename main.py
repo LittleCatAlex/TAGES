@@ -15,6 +15,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, accuracy_score
 
+from config import LITHOLOGY_DICT
 from velocity_processor import process_velocity
 from drill_processor import process_drill_records
 from data_fetcher import fetch_tvm_data
@@ -193,16 +194,7 @@ def process_drilling(
                 merged_df['Vs'] = np.nan
 
             # 🌟 步驟二：沒有資料 (NaN) 的地方，再用錨定經驗值填補
-            empirical_vel = {
-                0: (1500, 500),   # 未知
-                1: (800, 300),    # 表土
-                2: (1600, 600),   # 泥岩
-                3: (2000, 800),   # 粉土
-                4: (2800, 1400),  # 砂岩
-                5: (2400, 1200),  # 礫石
-                6: (2200, 1000),  # 互層
-                7: (5000, 2800)   # 堅硬岩盤
-            }
+            empirical_vel = {k: (v["vp"], v["vs"]) for k, v in LITHOLOGY_DICT.items()}
             
             for litho_id, (vp_emp, vs_emp) in empirical_vel.items():
                 # 關鍵邏輯：只針對「該岩性」且「Vp 沒抓到真實資料 (isna)」的列進行填補
@@ -342,26 +334,16 @@ def interactive_predict():
 
     model = joblib.load(model_path)
     
-    # 🌟 更新為全新的 8 種地質分類字典
-    mapping = {
-        0: "未知/其他 (Unknown)", 
-        1: "表土/填土 (Topsoil)", 
-        2: "泥岩/黏土 (Mud/Clay)", 
-        3: "粉土 (Silt)", 
-        4: "砂岩 (Sandstone)", 
-        5: "礫石 (Gravel)", 
-        6: "互層 (Interbedded)", 
-        7: "堅硬岩盤 (Hard Bedrock)"
-    }
+    # 🌟 自動載入全域預測對照表
+    mapping = {k: v["name"] for k, v in LITHOLOGY_DICT.items()}
     
     typer.secho("\n✅ 模型載入完成！進入互動預測模式 (輸入 q 離開)", fg=typer.colors.GREEN, bold=True)
-    typer.secho("💡 提示：AI 現在完全依靠波速 (Vp/Vs) 來判斷岩相，不再受深度限制！", fg=typer.colors.YELLOW)
+    typer.secho("💡 提示：", fg=typer.colors.YELLOW)
     
     while True:
         try:
             print("-" * 45)
-            # 為了使用者體驗保留深度輸入，但 AI 預測時不會用到它
-            depth_input = input("📍 請輸入深度 (公尺，僅供紀錄): ").strip()
+            depth_input = input("📍 請輸入深度 (公尺): ").strip()
             if depth_input.lower() in ['q', 'quit', 'exit']: break
             
             depth = float(depth_input)
@@ -411,7 +393,7 @@ def plot_ai_profile_cmd(
         typer.secho("❌ 找不到震波檔案或 AI 模型！", fg=typer.colors.RED)
         return
 
-    typer.secho(f"⏳ 正在套用「地表邊界條件」並進行自然壓實梯度內插...", fg=typer.colors.CYAN)
+    typer.secho(f"⏳ 正在進行自然壓實梯度內插...", fg=typer.colors.CYAN)
     
     # 1. 讀取 API 深層震波數據
     df = pd.read_csv(csv_path)
@@ -456,10 +438,13 @@ def plot_ai_profile_cmd(
     predictions = model.predict(features)
     grid_litho = predictions.reshape(grid_x.shape)
 
-    # 6. 色票與圖例 (維持 8 種擴充分類)
-    colors = ['lightgray', 'khaki', 'saddlebrown', 'tan', 'sandybrown', 'dimgray', 'olivedrab', 'darkslategray']
+    # 6. 色票與圖例 (全自動對應，未來加到 100 種也不怕報錯！)
+    colors = [LITHOLOGY_DICT[i]["color"] for i in range(len(LITHOLOGY_DICT))]
+    labels = [LITHOLOGY_DICT[i]["name"] for i in range(len(LITHOLOGY_DICT))]
+    
     cmap = mcolors.ListedColormap(colors)
-    bounds = [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5]
+    # 動態計算邊界，有幾種分類就自動切幾格
+    bounds = np.arange(-0.5, len(LITHOLOGY_DICT) + 0.5, 1) 
     norm = mcolors.BoundaryNorm(bounds, cmap.N)
 
     fig, ax = plt.subplots(figsize=(12, 6))
