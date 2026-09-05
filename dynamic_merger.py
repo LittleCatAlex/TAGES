@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from pyproj import Transformer
 import os
-import requests # 假設你用 requests 呼叫中研院 API
+import requests
 
 from data_fetcher import fetch_tvm_data
 from drill_processor import advanced_geology_encoder, map_interval_data, parse_json_strata_to_dataframe

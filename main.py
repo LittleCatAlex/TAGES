@@ -140,74 +140,93 @@ def process_drilling(
     json_path: str = typer.Option("data_input/drilling/borehole_final_results.json", help="柱狀圖 JSON 檔案路徑"),
     output_dir: str = typer.Option("data_output", help="輸出資料夾"),
     step: float = typer.Option(0.5, help="目標深度網格解析度(公尺)"),
-    attach_seismic: bool = typer.Option(True, help="是否自動抓取已處理的 TVM 震波資料進行合併")
+    attach_seismic: bool = typer.Option(True, help="是否自動掛載真實震波資料")
 ):
     """
-    ⛏️ 讀取 JSON 柱狀圖紀錄、執行 NLP 文字解碼、掛載震波並輸出 AI 訓練矩陣
+    ⛏️ 優先合併真實 API 震波，若淺層無資料則自動使用物理經驗值填補
     """
+    import os
+    import json
+    import numpy as np
+    import pandas as pd
+    from pathlib import Path
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     if not os.path.exists(json_path):
-        typer.secho(f"❌ 找不到 JSON 鑽探檔案 [{json_path}]！", fg=typer.colors.RED)
+        typer.secho(f"❌ 找不到 JSON 檔案 [{json_path}]", fg=typer.colors.RED)
         return
 
-    typer.secho(f"\n📂 正在載入與解析 JSON 鑽探資料 [{json_path}]...", fg=typer.colors.CYAN)
+    typer.secho(f"\n📂 正在載入 JSON 鑽探資料與震波模型...", fg=typer.colors.CYAN)
+    
     with open(json_path, 'r', encoding='utf-8') as f:
         raw_data = json.load(f)
 
-    # 檢查是否需要合併震波資料
-    tvm_processed_path = os.path.join(output_dir, "TVM_Processed.csv")
+    # 嘗試讀取已處理的真實震波資料
     tvm_df = pd.DataFrame()
-    if attach_seismic:
-        if os.path.exists(tvm_processed_path):
-            tvm_df = pd.read_csv(tvm_processed_path)
-            typer.secho("🔗 已成功掛載預先處理好的震波速率模型", fg=typer.colors.BLUE)
-        else:
-            typer.secho("⚠️ 找不到已處理的 TVM 檔案，將略過震波合併 (建議先執行 seismic 指令)", fg=typer.colors.YELLOW)
+    tvm_processed_path = os.path.join(output_dir, "TVM_Processed.csv")
+    if attach_seismic and os.path.exists(tvm_processed_path):
+        tvm_df = pd.read_csv(tvm_processed_path)
+        typer.secho("🔗 成功找到實測震波模型！(淺層無資料處將啟動物理字典輔助)", fg=typer.colors.BLUE)
 
     success_count = 0
     for file_key, info in raw_data.items():
         well_name = info['borehole_info']['borehole_id']
         strata_list = info['strata']
         
-        typer.secho(f"\n⏳ 正在處理鑽孔：{well_name} ({file_key})", fg=typer.colors.YELLOW)
         try:
-            # 決定最大深度 (取 strata 裡最後一層的深度，若無則預設 10m)
             max_depth = float(strata_list[-1]['depth_m']) if strata_list else 10.0
-            if pd.isna(max_depth) or max_depth <= 0.0:
-                max_depth = 10.0
+            if pd.isna(max_depth) or max_depth <= 0.0: max_depth = 10.0
                 
             target_depths = np.arange(0.0, max_depth + step, step)
             merged_df = pd.DataFrame({'Depth': target_depths, 'Well_Name': well_name})
 
-            # 呼叫更新後的鑽探處理模組 (傳入 strata 清單)
+            # 解碼岩性文字
             merged_df = process_drill_records(merged_df, strata_list)
 
-            # 合併震波資料 (如果有的話)
+            # 🌟 步驟一：保留原本做法，優先合併真實震波
             if not tvm_df.empty:
                 merged_df['Depth'] = merged_df['Depth'].round(2)
                 tvm_df['Depth'] = tvm_df['Depth'].round(2)
-                
                 merged_df = pd.merge(merged_df, tvm_df[['Depth', 'Vp', 'Vs']], on='Depth', how='left')
-                merged_df['Vp'] = merged_df['Vp'].fillna(2500.0)
-                merged_df['Vs'] = merged_df['Vs'].fillna(1500.0)
-                feature_cols = ['Depth', 'Vp', 'Vs', 'RQD', 'Lithology_ID', 'Structure_ID']
             else:
-                feature_cols = ['Depth', 'RQD', 'Lithology_ID', 'Structure_ID']
+                merged_df['Vp'] = np.nan
+                merged_df['Vs'] = np.nan
 
+            # 🌟 步驟二：沒有資料 (NaN) 的地方，再用錨定經驗值填補
+            empirical_vel = {
+                0: (1500, 500),   # 未知
+                1: (800, 300),    # 表土
+                2: (1600, 600),   # 泥岩
+                3: (2000, 800),   # 粉土
+                4: (2800, 1400),  # 砂岩
+                5: (2400, 1200),  # 礫石
+                6: (2200, 1000),  # 互層
+                7: (5000, 2800)   # 堅硬岩盤
+            }
+            
+            for litho_id, (vp_emp, vs_emp) in empirical_vel.items():
+                # 關鍵邏輯：只針對「該岩性」且「Vp 沒抓到真實資料 (isna)」的列進行填補
+                mask = (merged_df['Lithology_ID'] == litho_id) & (merged_df['Vp'].isna())
+                count = mask.sum()
+                if count > 0:
+                    merged_df.loc[mask, 'Vp'] = np.random.normal(vp_emp, vp_emp * 0.1, count)
+                    merged_df.loc[mask, 'Vs'] = np.random.normal(vs_emp, vs_emp * 0.1, count)
+
+            # 最後的防呆機制：確保絕對沒有遺漏的 NaN
+            merged_df['Vp'] = merged_df['Vp'].fillna(1500.0)
+            merged_df['Vs'] = merged_df['Vs'].fillna(500.0)
+
+            # 輸出特徵檔案
+            feature_cols = ['Depth', 'Vp', 'Vs', 'RQD', 'Lithology_ID', 'Structure_ID']
             safe_name = file_key.replace('.png', '').replace(' ', '_')
-            csv_out = os.path.join(output_dir, f"{safe_name}_Processed.csv")
-            npy_out = os.path.join(output_dir, f"{safe_name}_Features.npy")
-            
-            merged_df.to_csv(csv_out, index=False, encoding='utf-8-sig')
-            np.save(npy_out, merged_df[feature_cols].to_numpy())
-            
-            typer.secho(f"  └─ ✅ {file_key} 處理完成", fg=typer.colors.GREEN)
+            merged_df.to_csv(os.path.join(output_dir, f"{safe_name}_Processed.csv"), index=False, encoding='utf-8-sig')
+            np.save(os.path.join(output_dir, f"{safe_name}_Features.npy"), merged_df[feature_cols].to_numpy())
             success_count += 1
             
         except Exception as e:
             typer.secho(f"  └─ ❌ {file_key} 處理失敗: {e}", fg=typer.colors.RED)
 
-    typer.secho(f"\n🎉 批次處理結束！共成功處理 {success_count} 筆鑽探資料。", fg=typer.colors.MAGENTA, bold=True)
+    typer.secho(f"\n🎉 處理結束！成功產出 {success_count} 筆訓練資料。", fg=typer.colors.MAGENTA, bold=True)
 
 # =====================================================================
 # 【全新功能】指令 4：一鍵清除輸出資料夾 (帶防呆)
@@ -274,10 +293,13 @@ def train_model(
     cols = dataset.shape[1]
     
     # 自動相容 6欄(drilling) 與 4欄(single-well) 的矩陣
+    # 自動相容 6欄(drilling) 與 4欄(single-well) 的矩陣
     if cols >= 5:
-        X, y = dataset[:, 0:3], dataset[:, 4]
+        # 【關鍵修改】特徵 (X) 從 1:3 抓取，代表只拿索引 1 (Vp) 和 2 (Vs)，拋棄 0 (Depth)
+        X, y = dataset[:, 1:3], dataset[:, 4]
     else:
-        X, y = dataset[:, 0:3], dataset[:, 3]
+        # 【關鍵修改】同上
+        X, y = dataset[:, 1:3], dataset[:, 3]
         
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
@@ -289,7 +311,7 @@ def train_model(
             
     if model is None:
         typer.secho("⏳ AI 正在拼命學習中...", fg=typer.colors.YELLOW)
-        model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        model = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1, class_weight='balanced')
         model.fit(X_train, y_train)
         
     y_pred = model.predict(X_test)
@@ -341,6 +363,100 @@ def interactive_predict():
     typer.secho("\n👋 已離開預測終端。", fg=typer.colors.YELLOW)
 
 # =====================================================================
+# 指令 10：繪製 AI 預測的高解析地質剖面圖 (Plot AI Profile)
+# =====================================================================
+@app.command(name="ai-profile")
+def plot_ai_profile_cmd(
+    csv_path: str = typer.Option("data_input/seismic/TVM_VerticalProfile_Output.csv", help="原始震波 CSV 路徑"),
+    model_path: str = typer.Option("models/tages_rf_model.pkl", help="訓練好的 AI 模型路徑"),
+    max_depth: float = typer.Option(2.0, help="顯示的最大深度 (公里)")
+):
+    """
+    🤖 加入地質「壓實梯度」與「地表邊界條件」，進行最合理的 AI 岩相預測
+    """
+    import os
+    import joblib
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    import matplotlib.patches as mpatches
+    from scipy.interpolate import griddata
+
+    if not os.path.exists(csv_path) or not os.path.exists(model_path):
+        typer.secho("❌ 找不到震波檔案或 AI 模型！", fg=typer.colors.RED)
+        return
+
+    typer.secho(f"⏳ 正在套用「地表邊界條件」並進行自然壓實梯度內插...", fg=typer.colors.CYAN)
+    
+    # 1. 讀取 API 深層震波數據
+    df = pd.read_csv(csv_path)
+    lon = df['Lon'].values
+    depth_km = df['1'].values 
+    vp_kms = df['Vp'].values
+    vs_kms = df['Vs'].values
+
+    # 🌟【最合理的物理解法：加入地表虛擬測站】
+    # 我們在地表 (Depth=0) 建立一整排的基準點，賦予未壓實土壤的標準波速
+    unique_lons = np.unique(lon)
+    surface_depth = np.zeros_like(unique_lons)
+    surface_vp = np.full_like(unique_lons, 1.2)  # 地表 Vp 預設為 1200 m/s (1.2 km/s)
+    surface_vs = np.full_like(unique_lons, 0.4)  # 地表 Vs 預設為 400 m/s (0.4 km/s)
+
+    # 將地表基準點與 API 深層數據「合併」
+    aug_lon = np.concatenate([lon, unique_lons])
+    aug_depth = np.concatenate([depth_km, surface_depth])
+    aug_vp = np.concatenate([vp_kms, surface_vp])
+    aug_vs = np.concatenate([vs_kms, surface_vs])
+
+    # 2. 建立高解析度繪圖網格
+    x_min, x_max = lon.min(), lon.max()
+    grid_x, grid_y = np.mgrid[x_min:x_max:500j, 0:max_depth:500j]
+
+    # 3. 🌟【改用 Linear 內插產生自然梯度】
+    # linear 會在 0km(1.2) 到 1km(3.8) 之間拉出一條平滑的物理過渡帶
+    grid_vp = griddata((aug_lon, aug_depth), aug_vp, (grid_x, grid_y), method='linear')
+    grid_vs = griddata((aug_lon, aug_depth), aug_vs, (grid_x, grid_y), method='linear')
+    
+    # 防呆：填補 linear 算不到的邊界角落
+    grid_vp = np.where(np.isnan(grid_vp), griddata((aug_lon, aug_depth), aug_vp, (grid_x, grid_y), method='nearest'), grid_vp)
+    grid_vs = np.where(np.isnan(grid_vs), griddata((aug_lon, aug_depth), aug_vs, (grid_x, grid_y), method='nearest'), grid_vs)
+
+    # 4. 單位轉換 (km -> m)
+    vp_ms = grid_vp.flatten() * 1000
+    vs_ms = grid_vs.flatten() * 1000
+
+    # 5. 載入 AI 模型進行預測 (只看 Vp, Vs)
+    model = joblib.load(model_path)
+    features = np.column_stack((vp_ms, vs_ms))
+    predictions = model.predict(features)
+    grid_litho = predictions.reshape(grid_x.shape)
+
+    # 6. 色票與圖例 (維持 8 種擴充分類)
+    colors = ['lightgray', 'khaki', 'saddlebrown', 'tan', 'sandybrown', 'dimgray', 'olivedrab', 'darkslategray']
+    cmap = mcolors.ListedColormap(colors)
+    bounds = [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5]
+    norm = mcolors.BoundaryNorm(bounds, cmap.N)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    im = ax.pcolormesh(grid_x, grid_y, grid_litho, cmap=cmap, norm=norm, shading='auto')
+
+    ax.invert_yaxis()
+    ax.set_xlabel('Longitude (Degrees)', fontsize=12)
+    ax.set_ylabel('Depth (km)', fontsize=12)
+    ax.set_title(f'TAGES AI Geological Profile (Physics-Anchored, max {max_depth} km)', fontsize=16, fontweight='bold')
+    
+    labels = ["Unknown", "Topsoil", "Mud/Clay", "Silt", "Sandstone", "Gravel", "Interbedded", "Hard Bedrock"]
+    patches = [mpatches.Patch(color=c, label=l) for c, l in zip(colors, labels)]
+    ax.legend(handles=patches, bbox_to_anchor=(1.02, 1), loc='upper left', title="Lithology")
+    
+    plt.tight_layout()
+    output_png = "data_output/AI_Predicted_Physics_Profile.png"
+    plt.savefig(output_png, dpi=300)
+    typer.secho(f"✅ 符合物理法則的剖面圖渲染完成！已儲存至：{output_png}", fg=typer.colors.GREEN, bold=True)
+    plt.show()
+
+# =====================================================================
 # CLI 指令：自製互動式 REPL 介面
 # =====================================================================
 @app.command()
@@ -357,6 +473,7 @@ def repl():
     typer.secho("  👉 seismic   : 單獨處理震波速率模型")
     typer.secho("  👉 drilling  : 批次處理鑽探紀錄 (自動掛載震波資料與特徵對齊)")
     typer.secho("  👉 fetch     : 從中研院下載震測模型數據(ex:fetch --lat1 24.0 --lon1 121.0 --lat2 24.5 --lon2 121.5)")
+    typer.secho("  👉 ai-profile: 畫出滿版預測岩層剖面圖")
     typer.secho("  👉 clean     : 刪除並清空data_output資料夾內的所有產出")
     typer.secho("  👉 exit      : 離開系統\n")
     while True:

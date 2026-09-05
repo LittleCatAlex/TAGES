@@ -7,6 +7,8 @@ env/
 
 # TAGES 專案的資料與輸出
 data_output/
+data_input/
+models/
 data_input/seismic/
 data_input/drilling/
 *.npy
