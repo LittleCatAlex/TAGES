@@ -7,7 +7,6 @@ import requests # 假設你用 requests 呼叫中研院 API
 from data_fetcher import fetch_tvm_data
 from drill_processor import advanced_geology_encoder, map_interval_data, parse_json_strata_to_dataframe
 from velocity_processor import process_velocity
-from dynamic_merger import process_single_well_dynamic
 
 def twd_to_wgs84(n: float, e: float, datum: str = "TWD97"):
     """將台灣二度分帶座標 (N, E) 轉換為 WGS84 (緯度, 經度)"""

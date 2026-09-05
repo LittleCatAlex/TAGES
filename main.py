@@ -1,6 +1,5 @@
 #main.py
 #TAGES (Taiwan AI Geological Exploration System)
-
 import typer
 import click
 import shlex
@@ -10,6 +9,11 @@ import os
 import shutil  # 【新增】用來安全刪除子資料夾與檔案
 from pathlib import Path
 import json
+import joblib
+from datetime import datetime
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, accuracy_score
 
 from velocity_processor import process_velocity
 from drill_processor import process_drill_records
@@ -240,6 +244,101 @@ def clean_output(
     except Exception as e:
         typer.secho(f"❌ 清除失敗，錯誤訊息: {e}", fg=typer.colors.RED)
 
+# =====================================================================
+# 指令 5：訓練 AI 模型 (Train)
+# =====================================================================
+@app.command(name="train")
+def train_model(
+    data_dir: str = typer.Option("data_output", help="特徵矩陣所在資料夾"),
+    model_dir: str = typer.Option("models", help="模型存檔資料夾"),
+    force: bool = typer.Option(False, "--force", "-f", help="強制重新訓練，不載入舊模型")
+):
+    """
+    讀取所有特徵矩陣，訓練隨機森林 AI 模型並自動存檔
+    """
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, "tages_rf_model.pkl")
+    report_path = os.path.join(model_dir, "training_report.txt")
+    
+    all_data = []
+    if os.path.exists(data_dir):
+        for file in os.listdir(data_dir):
+            if file.endswith("_Features.npy") and not file.startswith("TVM"):
+                all_data.append(np.load(os.path.join(data_dir, file)))
+                
+    if not all_data:
+        typer.secho("❌ 找不到特徵矩陣！請先執行 drilling 或 single-well。", fg=typer.colors.RED)
+        return
+        
+    dataset = np.vstack(all_data)
+    cols = dataset.shape[1]
+    
+    # 自動相容 6欄(drilling) 與 4欄(single-well) 的矩陣
+    if cols >= 5:
+        X, y = dataset[:, 0:3], dataset[:, 4]
+    else:
+        X, y = dataset[:, 0:3], dataset[:, 3]
+        
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    model = None
+    if not force and os.path.exists(model_path):
+        if typer.confirm(f"🔄 發現舊模型 ({model_path})，要直接載入嗎？(選 N 則重新訓練)", default=True):
+            model = joblib.load(model_path)
+            typer.secho("✅ 舊模型載入成功！", fg=typer.colors.GREEN)
+            
+    if model is None:
+        typer.secho("⏳ AI 正在拼命學習中...", fg=typer.colors.YELLOW)
+        model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        model.fit(X_train, y_train)
+        
+    y_pred = model.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    
+    typer.secho(f"\n📊 總體準確率 (Accuracy): {accuracy * 100:.2f}%", fg=typer.colors.CYAN, bold=True)
+    
+    joblib.dump(model, model_path)
+    typer.secho(f"💾 模型與報告已儲存至 {model_dir} 資料夾！", fg=typer.colors.GREEN)
+
+
+# =====================================================================
+# 指令 6：啟動 AI 預測終端 (Predict)
+# =====================================================================
+@app.command(name="predict")
+def interactive_predict():
+    """
+    啟動地質預測終端
+    """
+    model_path = os.path.join("models", "tages_rf_model.pkl")
+    if not os.path.exists(model_path):
+        typer.secho("❌ 找不到訓練好的模型！請先執行 train 指令。", fg=typer.colors.RED)
+        return
+
+    model = joblib.load(model_path)
+    mapping = {0: "未知/其他", 1: "泥岩/黏土/粉土", 2: "砂岩", 3: "礫石/卵石/巖塊", 4: "互層"}
+    
+    typer.secho("\n✅ 模型載入完成！進入互動預測模式 (輸入 q 離開)", fg=typer.colors.GREEN, bold=True)
+    
+    while True:
+        try:
+            print("-" * 45)
+            depth_input = input("📍 請輸入深度 (公尺): ").strip()
+            if depth_input.lower() in ['q', 'quit', 'exit']: break
+            
+            depth = float(depth_input)
+            vp = float(input("🌊 請輸入 P波速率 (Vp, m/s): ").strip())
+            vs = float(input("🌊 請輸入 S波速率 (Vs, m/s): ").strip())
+
+            prediction_id = model.predict(np.array([[depth, vp, vs]]))[0]
+            rock_name = mapping.get(int(prediction_id), "未定義")
+
+            typer.secho(f"\n✨ 預測結果 👉 【 {rock_name} 】 (類別ID: {int(prediction_id)})", fg=typer.colors.MAGENTA, bold=True)
+        except ValueError:
+            typer.secho("⚠️ 格式錯誤！請輸入正確的數字。", fg=typer.colors.RED)
+        except KeyboardInterrupt:
+            break
+            
+    typer.secho("\n👋 已離開預測終端。", fg=typer.colors.YELLOW)
 
 # =====================================================================
 # CLI 指令：自製互動式 REPL 介面
@@ -252,6 +351,8 @@ def repl():
     typer.secho("=====================================================", fg=typer.colors.MAGENTA)
     typer.secho("Welcome to TAGES (Taiwan AI Geological Exploration System)\n",  fg=typer.colors.YELLOW)
     typer.secho("可用指令：", fg=typer.colors.CYAN)
+    typer.secho("  👉 train     : 訓練隨機森林模型")
+    typer.secho("  👉 predict   : 啟動預測終端")
     typer.secho("  👉 export-rqd: 將Excel中的RQD分頁匯出成.csv檔")
     typer.secho("  👉 seismic   : 單獨處理震波速率模型")
     typer.secho("  👉 drilling  : 批次處理鑽探紀錄 (自動掛載震波資料與特徵對齊)")
