@@ -359,11 +359,16 @@ def interactive_predict():
 def plot_ai_profile_cmd(
     csv_path: str = typer.Option("data_input/seismic/TVM_VerticalProfile_Output.csv", help="原始震波 CSV 路徑"),
     model_path: str = typer.Option("models/tages_rf_model.pkl", help="訓練好的 AI 模型路徑"),
-    max_depth: float = typer.Option(0.1, help="顯示的最大深度 (公里)") 
+    max_depth: float = typer.Option(0.1, help="顯示的最大深度 (公里)"),
+    lat1: float = typer.Option(None, help="剖面起點緯度 (未輸入則套用預設)"),
+    lon1: float = typer.Option(None, help="剖面起點經度"),
+    lat2: float = typer.Option(None, help="剖面終點緯度"),
+    lon2: float = typer.Option(None, help="剖面終點經度")
 ):
     """
-    🤖 繪製 2D 地質剖面 (自動切片處理)
+    🤖 繪製 2D 地質剖面 (支援自動水平切片或自訂兩點連線剖面)
     """
+    import os
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
     import matplotlib.patches as mpatches
@@ -373,67 +378,98 @@ def plot_ai_profile_cmd(
         typer.secho("❌ 找不到震波檔案或 AI 模型！", fg=typer.colors.RED)
         return
 
-    typer.secho(f"⏳ 正在進行 2D 切片與網格內插...", fg=typer.colors.CYAN)
-    
+    typer.secho(f"⏳ 正在進行空間投影與網格內插...", fg=typer.colors.CYAN)
     df = pd.read_csv(csv_path)
     
-    # 🌟 關鍵修正：只保留中間緯度附近的一刀切片，避免 3D 資料擠壓
-    if 'Lat' in df.columns:
-        target_lat = df['Lat'].mean()
+    # 🌟 判斷：如果有輸入完整的兩點座標，就執行「兩點連線投影剖面」
+    if lat1 is not None and lon1 is not None and lat2 is not None and lon2 is not None:
+        typer.secho(f"📍 繪製自訂連線剖面: 起點({lat1},{lon1}) 至 終點({lat2},{lon2})", fg=typer.colors.YELLOW)
+        A = np.array([lon1, lat1])
+        B = np.array([lon2, lat2])
+        AB = B - A
+        AB_len = np.linalg.norm(AB)
+        
+        if AB_len == 0:
+            typer.secho("❌ 起點與終點不能相同！", fg=typer.colors.RED)
+            return
+            
+        AB_norm = AB / AB_len
+        P = np.column_stack((df['Lon'].values, df['Lat'].values))
+        
+        # 計算資料點在 AB 向量上的投影比例 (0 = 起點, 1 = 終點) 與垂直距離
+        PA = P - A
+        proj_ratio = np.dot(PA, AB_norm) / AB_len
+        proj_pts = A + np.outer(proj_ratio, AB)
+        ortho_dist = np.linalg.norm(P - proj_pts, axis=1)
+        
+        # 篩選靠近連線的點 (誤差 < 0.05 度，且位於線段頭尾 10% 延伸範圍內)
+        mask = (ortho_dist < 0.05) & (proj_ratio >= -0.1) & (proj_ratio <= 1.1)
+        df = df[mask]
+        
+        x_val = proj_ratio[mask]
+        x_label = "Distance Ratio (0=Start Point, 1=End Point)"
+        x_min_plot, x_max_plot = 0.0, 1.0
+        plot_title = f'TAGES AI Profile (From {lat1},{lon1} to {lat2},{lon2})'
+        
+    else:
+        # 🌟 預設做法：只保留中間緯度附近的一刀切片
+        target_lat = df['Lat'].mean() if 'Lat' in df.columns else 23.5
         tolerance = 0.05
         df = df[(df['Lat'] >= target_lat - tolerance) & (df['Lat'] <= target_lat + tolerance)]
-        typer.secho(f"📍 剖面緯度鎖定於: {target_lat:.3f} ± {tolerance}", fg=typer.colors.YELLOW)
+        typer.secho(f"📍 剖面預設鎖定緯度: {target_lat:.3f} ± {tolerance}", fg=typer.colors.YELLOW)
+        
+        x_val = df['Lon'].values
+        x_label = "Longitude (Degrees)"
+        x_min_plot, x_max_plot = x_val.min(), x_val.max()
+        plot_title = f'TAGES AI Geological Profile (Lat: {target_lat:.2f})'
 
-    lon = df['Lon'].values
+    if df.empty:
+        typer.secho("❌ 找不到該範圍或連線附近的震波資料，請放寬條件！", fg=typer.colors.RED)
+        return
+
+    # 資料前處理與邊界條件
     depth_km = df['1'].values 
     vp_kms = df['Vp'].values
     vs_kms = df['Vs'].values
-
-    # 地表邊界條件
-    unique_lons = np.unique(lon)
-    surface_depth = np.zeros_like(unique_lons)
-    surface_vp = np.full_like(unique_lons, 1.2)
-    surface_vs = np.full_like(unique_lons, 0.4)
-
-    aug_lon = np.concatenate([lon, unique_lons])
-    aug_depth = np.concatenate([depth_km, surface_depth])
-    aug_vp = np.concatenate([vp_kms, surface_vp])
-    aug_vs = np.concatenate([vs_kms, surface_vs])
-
-    x_min, x_max = lon.min(), lon.max()
-    grid_x, grid_y = np.mgrid[x_min:x_max:500j, 0:max_depth:500j]
-
-    grid_vp = griddata((aug_lon, aug_depth), aug_vp, (grid_x, grid_y), method='linear')
-    grid_vs = griddata((aug_lon, aug_depth), aug_vs, (grid_x, grid_y), method='linear')
     
-    grid_vp = np.where(np.isnan(grid_vp), griddata((aug_lon, aug_depth), aug_vp, (grid_x, grid_y), method='nearest'), grid_vp)
-    grid_vs = np.where(np.isnan(grid_vs), griddata((aug_lon, aug_depth), aug_vs, (grid_x, grid_y), method='nearest'), grid_vs)
+    unique_x = np.unique(x_val)
+    aug_x = np.concatenate([x_val, unique_x])
+    aug_depth = np.concatenate([depth_km, np.zeros_like(unique_x)])
+    aug_vp = np.concatenate([vp_kms, np.full_like(unique_x, 1.2)])
+    aug_vs = np.concatenate([vs_kms, np.full_like(unique_x, 0.4)])
 
-    # 將畫圖用的公里(km)轉成模型吃的公尺(m)
+    # 高解析度網格內插
+    grid_x, grid_y = np.mgrid[x_min_plot:x_max_plot:500j, 0:max_depth:500j]
+    grid_vp = griddata((aug_x, aug_depth), aug_vp, (grid_x, grid_y), method='linear')
+    grid_vs = griddata((aug_x, aug_depth), aug_vs, (grid_x, grid_y), method='linear')
+    
+    grid_vp = np.where(np.isnan(grid_vp), griddata((aug_x, aug_depth), aug_vp, (grid_x, grid_y), method='nearest'), grid_vp)
+    grid_vs = np.where(np.isnan(grid_vs), griddata((aug_x, aug_depth), aug_vs, (grid_x, grid_y), method='nearest'), grid_vs)
+
+    # 深度與速率轉換
     depth_m = grid_y.flatten() * 1000
     vp_ms = grid_vp.flatten() * 1000
     vs_ms = grid_vs.flatten() * 1000
 
-    # 🌟 關鍵修正：將深度一起餵入模型
+    # 模型預測
     model = joblib.load(model_path)
-    features = np.column_stack((depth_m, vp_ms, vs_ms))
-    predictions = model.predict(features)
+    predictions = model.predict(np.column_stack((depth_m, vp_ms, vs_ms)))
     grid_litho = predictions.reshape(grid_x.shape)
 
+    # 色彩與圖例設定
     colors = [LITHOLOGY_DICT[i]["color"] for i in range(len(LITHOLOGY_DICT))]
     labels = [LITHOLOGY_DICT[i]["name"] for i in range(len(LITHOLOGY_DICT))]
-    
     cmap = mcolors.ListedColormap(colors)
     bounds = np.arange(-0.5, len(LITHOLOGY_DICT) + 0.5, 1) 
     norm = mcolors.BoundaryNorm(bounds, cmap.N)
 
+    # 繪製圖表
     fig, ax = plt.subplots(figsize=(12, 6))
     im = ax.pcolormesh(grid_x, grid_y, grid_litho, cmap=cmap, norm=norm, shading='auto')
-
     ax.invert_yaxis()
-    ax.set_xlabel('Longitude (Degrees)', fontsize=12)
+    ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel('Depth (km)', fontsize=12)
-    ax.set_title(f'TAGES AI Geological Profile (Lat: {target_lat:.2f})', fontsize=16, fontweight='bold')
+    ax.set_title(plot_title, fontsize=16, fontweight='bold')
     
     patches = [mpatches.Patch(color=c, label=l) for c, l in zip(colors, labels)]
     ax.legend(handles=patches, bbox_to_anchor=(1.02, 1), loc='upper left', title="Lithology")
