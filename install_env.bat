@@ -1,11 +1,14 @@
 @echo off
 chcp 65001 >nul
+:: 🌟 鎖定工作路徑，防止「以系統管理員執行」導致路徑跑掉
+cd /d "%~dp0"
+
 title TAGES環境安裝程式
 color 0B
 
 echo ===================================================
 echo   TAGES (Taiwan AI Geological Exploration System)
-echo   Python 執行環境與相依套件自動安裝程式
+echo   Python 虛擬環境與相依套件自動安裝程式
 echo ===================================================
 echo.
 
@@ -19,6 +22,18 @@ if %errorlevel% neq 0 (
 )
 
 echo [準備] Python 環境檢查通過。
+
+echo [執行] 正在專案內建立獨立的虛擬環境 (venv)...
+python -m venv venv
+if %errorlevel% neq 0 (
+    echo [錯誤] 虛擬環境建立失敗。
+    pause
+    exit /b
+)
+
+echo [執行] 啟動虛擬環境...
+call venv\Scripts\activate.bat
+
 echo [執行] 開始安裝並升級核心套件 pip...
 python -m pip install --upgrade pip
 
@@ -40,8 +55,8 @@ python -m pip install -r requirements.txt
 echo.
 echo ===================================================
 if %errorlevel% equ 0 (
-    echo [成功] 所有套件已安裝完畢。
-    echo [提示] 現在您可以執行start.bat來啟動系統。
+    echo [成功] 所有套件已安全安裝於獨立的 venv 環境中！
+    echo [提示] 現在您可以直接執行 start.bat 來啟動系統。
 ) else (
     echo [警告] 安裝過程中發生錯誤。
 )
