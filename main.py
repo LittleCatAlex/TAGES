@@ -204,8 +204,13 @@ def process_drilling(
                 local_tvm = tvm_df[(tvm_df['Lon'] == closest_lon) & (tvm_df['Lat'] == closest_lat)].copy()
                 local_tvm = local_tvm.sort_values(by='Depth')
 
-                merged_df['Vp'] = np.interp(merged_df['Depth'], local_tvm['Depth'], local_tvm['Vp'])
-                merged_df['Vs'] = np.interp(merged_df['Depth'], local_tvm['Depth'], local_tvm['Vs'])
+                # ⚠️ 關鍵修正：將中研院震波的單位 (公里, km/s) 轉換為與鑽探資料一致的 (公尺, m/s)
+                local_depth_m = local_tvm['Depth'] * 1000.0
+                local_vp_ms = local_tvm['Vp'] * 1000.0
+                local_vs_ms = local_tvm['Vs'] * 1000.0
+
+                merged_df['Vp'] = np.interp(merged_df['Depth'], local_depth_m, local_vp_ms)
+                merged_df['Vs'] = np.interp(merged_df['Depth'], local_depth_m, local_vs_ms)
             else:
                 merged_df['Vp'] = np.nan
                 merged_df['Vs'] = np.nan
@@ -442,15 +447,15 @@ def plot_ai_profile_cmd(
         return
 
     # 資料前處理與邊界條件
-    depth_km = df['1'].values 
+    depth_km = df['Depth'].values 
     vp_kms = df['Vp'].values
     vs_kms = df['Vs'].values
     
     unique_x = np.unique(x_val)
     aug_x = np.concatenate([x_val, unique_x])
     aug_depth = np.concatenate([depth_km, np.zeros_like(unique_x)])
-    aug_vp = np.concatenate([vp_kms, np.full_like(unique_x, 1.2)])
-    aug_vs = np.concatenate([vs_kms, np.full_like(unique_x, 0.4)])
+    aug_vp = np.concatenate([vp_kms, np.full_like(unique_x, 0.5)])
+    aug_vs = np.concatenate([vs_kms, np.full_like(unique_x, 0.2)])
 
     # 高解析度網格內插
     grid_x, grid_y = np.mgrid[x_min_plot:x_max_plot:500j, 0:max_depth:500j]
