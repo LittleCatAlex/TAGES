@@ -57,41 +57,52 @@ def fetch_cloud_data(
 # =====================================================================
 @app.command(name="seismic")
 def process_seismic(
-    seis_dir: str = typer.Option("data_input/seismic", help="震波速率資料資料夾"),
-    output_dir: str = typer.Option("data_output", help="輸出資料夾"),
-    step: float = typer.Option(0.5, help="目標深度網格解析度(公尺)"),
-    max_depth: float = typer.Option(100.0, help="預設最大深度(公尺)")
+    input_csv: str = typer.Option("data_input/seismic/TVM_VerticalProfile_Output.csv", help="原始震波 CSV 檔案"),
+    output_dir: str = typer.Option("data_output", help="處理後特徵輸出資料夾"),
+    step: float = typer.Option(0.5, help="深度內插網格間距 (公尺)"),
+    max_depth: float = typer.Option(60.0, help="最大處理深度 (公尺)")
 ):
     """
-    🌊 處理震波速率模型 (TVM)，執行深度網格內插並輸出特徵矩陣
+    🌊 獨立處理震波速率模型，執行深度網格內插並輸出特徵矩陣
     """
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    tvm_path = os.path.join(seis_dir, "TVM_VerticalProfile_Output.csv")
+    import os
+    import numpy as np
+    import pandas as pd
+    from pathlib import Path
     
-    typer.secho(f"\n🌊 開始處理震波資料: {tvm_path}", fg=typer.colors.CYAN)
-    
-    if not os.path.exists(tvm_path):
-        typer.secho("❌ 找不到 TVM 檔案，請確認檔案名稱與路徑！", fg=typer.colors.RED)
+    # 匯入 velocity_processor 中的處理函數
+    try:
+        from velocity_processor import process_velocity
+    except ImportError:
+        typer.secho("❌ 找不到 velocity_processor.py，請確認檔案是否存在。", fg=typer.colors.RED)
         return
 
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    if not os.path.exists(input_csv):
+        typer.secho(f"❌ 找不到震波檔案: {input_csv}", fg=typer.colors.RED)
+        typer.secho("👉 請先執行 'fetch' 指令下載資料。", fg=typer.colors.YELLOW)
+        return
+
+    typer.secho(f"\n🌊 正在讀取並內插震波模型資料...", fg=typer.colors.CYAN)
+    
     try:
-        tvm_df = pd.read_csv(tvm_path)
-        actual_max = tvm_df['Depth'].max() if 'Depth' in tvm_df.columns else max_depth
-        target_depths = np.arange(0.0, actual_max + step, step)
+        tvm_df = pd.read_csv(input_csv)
         
-        merged_df = process_velocity(tvm_df, target_depths)
+        # 建立目標深度網格 (例如 0, 0.5, 1.0 ... 60.0)
+        target_depths = np.arange(0.0, max_depth + step, step)
         
-        csv_out = os.path.join(output_dir, "TVM_Processed.csv")
-        npy_out = os.path.join(output_dir, "TVM_Features.npy")
+        # 呼叫你寫的內插函數
+        result_df = process_velocity(tvm_df, target_depths)
         
-        merged_df.to_csv(csv_out, index=False, encoding='utf-8-sig')
-        np.save(npy_out, merged_df[['Depth', 'Vp', 'Vs']].to_numpy())
+        output_csv = os.path.join(output_dir, "TVM_Processed.csv")
+        result_df.to_csv(output_csv, index=False)
         
-        typer.secho(f"✅ 震波資料處理完成！已存至 {output_dir}/TVM_Processed.csv", fg=typer.colors.GREEN)
+        typer.secho(f"✅ 震波內插完成！(深度: 0~{max_depth}m, 間距: {step}m)", fg=typer.colors.GREEN)
+        typer.secho(f"📂 檔案已存至 {output_csv}", fg=typer.colors.GREEN)
         
     except Exception as e:
-        typer.secho(f"❌ 震波資料處理失敗: {e}", fg=typer.colors.RED)
-
+        typer.secho(f"❌ 處理震波資料時發生錯誤: {e}", fg=typer.colors.RED)
 
 # =====================================================================
 # 指令 2：單獨將 RQD 分頁轉換為 CSV
