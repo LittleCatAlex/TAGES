@@ -43,8 +43,11 @@ def fetch_cloud_data(
     try:
         success = fetch_tvm_data(lat1, lon1, lat2, lon2, depth, output_dir)
         if success:
-            typer.secho(f"✅ 下載與轉檔成功！檔案已存至 {output_dir}/TVM_VerticalProfile_Output.csv", fg=typer.colors.GREEN)
+            typer.secho(f"✅ 下載與清洗成功！已過濾並保留 Depth, Vp, Vs, Lon, Lat 欄位。", fg=typer.colors.GREEN)
+            typer.secho(f"📂 檔案已存至 {output_dir}/TVM_VerticalProfile_Output.csv", fg=typer.colors.GREEN)
             typer.secho(f"👉 下一步建議：輸入 'seismic' 指令進行內插處理。", fg=typer.colors.YELLOW)
+        else:
+            typer.secho(f"❌ 下載或處理失敗，請檢查網路連線或 API 狀態。", fg=typer.colors.RED)
     except Exception as e:
         typer.secho(f"❌ 發生錯誤: {e}", fg=typer.colors.RED)
 
