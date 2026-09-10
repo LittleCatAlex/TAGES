@@ -82,16 +82,20 @@ def fetch_tvm_data(lat1: float, lon1: float, lat2: float, lon2: float, depth: in
             if data_files:
                 target_file = data_files[0]
                 with z.open(target_file) as f:
-                    # 【關鍵修正】加上 header=None，阻止 Pandas 把第一筆資料吃掉
+                    # 加上 header=None，阻止 Pandas 把第一筆資料吃掉
                     df = pd.read_csv(f, sep=r'\s+', header=None)
                     
                     # 【手動貼標籤】根據中研院格式，指定欄位意義
                     # 第 0 欄是深度, 第 2 欄是 Vp, 第 4 欄是 Vs, 第 8 欄是經度, 第 9 欄是緯度
-                    df.rename(columns={0: 'Depth', 2: 'Vp', 4: 'Vs', 8: 'Lon', 9: 'Lat'}, inplace=True)
+                    df.rename(columns={1: 'Depth', 2: 'Vp', 4: 'Vs', 8: 'Lon', 9: 'Lat'}, inplace=True)
+                    
+                    # 【核心修改區】強制剔除不需要的欄位，只留下這 5 個特徵
+                    keep_cols = ['Depth', 'Vp', 'Vs', 'Lon', 'Lat']
+                    df_cleaned = df[keep_cols]
                     
                     os.makedirs(output_dir, exist_ok=True)
                     output_csv = os.path.join(output_dir, "TVM_VerticalProfile_Output.csv")
-                    df.to_csv(output_csv, index=False)
+                    df_cleaned.to_csv(output_csv, index=False)
                     return True
             else:
                 raise FileNotFoundError("壓縮檔內找不到任何數據檔")
