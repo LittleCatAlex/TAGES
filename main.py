@@ -52,42 +52,31 @@ def fetch_cloud_data(
 # =====================================================================
 # 指令 1：獨立處理震波速率資料
 # =====================================================================
-@app.command(name="seismic")
-def process_seismic(
-    seis_dir: str = typer.Option("data_input/seismic", help="震波速率資料資料夾"),
-    output_dir: str = typer.Option("data_output", help="輸出資料夾"),
-    step: float = typer.Option(0.5, help="目標深度網格解析度(公尺)"),
-    max_depth: float = typer.Option(100.0, help="預設最大深度(公尺)")
+@app.command(name="fetch")
+def fetch_cloud_data(
+    lat1: float = typer.Option(23.50, help="起點緯度"),
+    lon1: float = typer.Option(120.18, help="起點經度"),
+    lat2: float = typer.Option(23.50, help="終點緯度"),
+    lon2: float = typer.Option(120.78, help="終點經度"),
+    depth: int = typer.Option(60, help="剖面深度(公里)"),
+    output_dir: str = typer.Option("data_input/seismic", help="存檔資料夾")
 ):
     """
-    🌊 處理震波速率模型 (TVM)，執行深度網格內插並輸出特徵矩陣
+    🌐 從中研院地球科學網自動下載並轉檔最新震波模型
     """
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    tvm_path = os.path.join(seis_dir, "TVM_VerticalProfile_Output.csv")
+    typer.secho(f"\n📡 正在連線至中研院 TEC API...", fg=typer.colors.CYAN)
+    typer.secho(f"   座標區間: ({lat1}, {lon1}) 到 ({lat2}, {lon2})", fg=typer.colors.CYAN)
     
-    typer.secho(f"\n🌊 開始處理震波資料: {tvm_path}", fg=typer.colors.CYAN)
-    
-    if not os.path.exists(tvm_path):
-        typer.secho("❌ 找不到 TVM 檔案，請確認檔案名稱與路徑！", fg=typer.colors.RED)
-        return
-
     try:
-        tvm_df = pd.read_csv(tvm_path)
-        actual_max = tvm_df['Depth'].max() if 'Depth' in tvm_df.columns else max_depth
-        target_depths = np.arange(0.0, actual_max + step, step)
-        
-        merged_df = process_velocity(tvm_df, target_depths)
-        
-        csv_out = os.path.join(output_dir, "TVM_Processed.csv")
-        npy_out = os.path.join(output_dir, "TVM_Features.npy")
-        
-        merged_df.to_csv(csv_out, index=False, encoding='utf-8-sig')
-        np.save(npy_out, merged_df[['Depth', 'Vp', 'Vs']].to_numpy())
-        
-        typer.secho(f"✅ 震波資料處理完成！已存至 {output_dir}/TVM_Processed.csv", fg=typer.colors.GREEN)
-        
+        success = fetch_tvm_data(lat1, lon1, lat2, lon2, depth, output_dir)
+        if success:
+            typer.secho(f"✅ 下載與清洗成功！已過濾並保留 Depth, Vp, Vs, Lon, Lat 欄位。", fg=typer.colors.GREEN)
+            typer.secho(f"📂 檔案已存至 {output_dir}/TVM_VerticalProfile_Output.csv", fg=typer.colors.GREEN)
+            typer.secho(f"👉 下一步建議：輸入 'seismic' 指令進行內插處理。", fg=typer.colors.YELLOW)
+        else:
+            typer.secho(f"❌ 下載或處理失敗，請檢查網路連線或 API 狀態。", fg=typer.colors.RED)
     except Exception as e:
-        typer.secho(f"❌ 震波資料處理失敗: {e}", fg=typer.colors.RED)
+        typer.secho(f"❌ 發生錯誤: {e}", fg=typer.colors.RED)
 
 
 # =====================================================================
