@@ -452,10 +452,22 @@ def plot_ai_profile_cmd(
     vs_kms = df['Vs'].values
     
     unique_x = np.unique(x_val)
-    aug_x = np.concatenate([x_val, unique_x])
-    aug_depth = np.concatenate([depth_km, np.zeros_like(unique_x)])
-    aug_vp = np.concatenate([vp_kms, np.full_like(unique_x, 0.5)])
-    aug_vs = np.concatenate([vs_kms, np.full_like(unique_x, 0.2)])
+    
+    # 地表極鬆軟土層 (Depth = 0 km)
+    surf_depth = np.zeros_like(unique_x)
+    surf_vp = np.full_like(unique_x, 0.5)
+    surf_vs = np.full_like(unique_x, 0.2)
+    
+    # 🌟 新增：地下 20 公尺 (0.02 km) 處的沉積岩界線
+    bedrock_depth = np.full_like(unique_x, 0.02)
+    bedrock_vp = np.full_like(unique_x, 1.5)  # 逼迫波速在 20m 處爬升至 1500 m/s
+    bedrock_vs = np.full_like(unique_x, 0.5)  # Vs 爬升至 500 m/s
+
+    # 將真實深層點、地表點、淺層基盤點 全部合併
+    aug_x = np.concatenate([x_val, unique_x, unique_x])
+    aug_depth = np.concatenate([depth_km, surf_depth, bedrock_depth])
+    aug_vp = np.concatenate([vp_kms, surf_vp, bedrock_vp])
+    aug_vs = np.concatenate([vs_kms, surf_vs, bedrock_vs])
 
     # 高解析度網格內插
     grid_x, grid_y = np.mgrid[x_min_plot:x_max_plot:500j, 0:max_depth:500j]
